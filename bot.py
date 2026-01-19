@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands, tasks
-from myserver import server_on()
+from myserver import server_on
 server_on()
 
 # =========================
@@ -596,6 +596,7 @@ if __name__ == "__main__":
     if not TOKEN:
         raise RuntimeError("DISCORD_TOKEN not set")
     bot.run(TOKEN)
+
 
 
 

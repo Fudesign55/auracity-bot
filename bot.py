@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import discord
 from discord.ext import commands, tasks
 from myserver import keep_alive
-keep_alive()
+server_on()
 
 # =========================
 # OPTIONAL: .env support (local dev)
@@ -596,4 +596,5 @@ if __name__ == "__main__":
     if not TOKEN:
         raise RuntimeError("DISCORD_TOKEN not set")
     bot.run(TOKEN)
+
 

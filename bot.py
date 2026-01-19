@@ -1,36 +1,34 @@
 import os
 import sqlite3
 import random
+import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from pathlib import Path
 
 import discord
 from discord.ext import commands, tasks
-from dotenv import load_dotenv
-from myserver import server_on
-server_on()
-# ======================
-# โหลด .env
-# ======================
-load_dotenv(Path(__file__).with_name(".env"))
-TOKEN = os.getenv("DISCORD_TOKEN")
-if not TOKEN:
-    raise RuntimeError("❌ ไม่พบ DISCORD_TOKEN ในไฟล์ .env (ต้องชื่อ .env และอยู่โฟลเดอร์เดียวกับ bot.py)")
+from myserver import keep_alive
+keep_alive()
 
-# ======================
+# =========================
+# OPTIONAL: .env support (local dev)
+# =========================
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
+# =========================
 # CONFIG
-# ======================
-TH_TZ = ZoneInfo("Asia/Bangkok")
+# =========================
+DB_PATH = "points.db"
+TZ = ZoneInfo("Asia/Bangkok")
 
 DAILY_AMOUNT = 10
 ROLL_COST = 10
 
-VOICE_REWARD_MINUTES = 1   # ครบ 60 นาที
-VOICE_REWARD_POINTS = 10    # ได้ 10 แต้ม
-VOICE_CHECK_EVERY_MIN = 1   # เช็คทุก 1 นาที
-VOICE_MUTE_LIMIT_MIN = 30   # ปิดไมค์/ปิดเสียงต่อเนื่องเกิน 30 นาที => หยุดนับจนกว่าจะกลับมา
-
+# Rewards: (name, weight)
 REWARDS = [
     ("เสียใจด้วยไม่ได้รางวัล 😭", 60),
     ("เงินเขียว 5,000 🟩", 25),
@@ -39,28 +37,35 @@ REWARDS = [
     ("สกินไม้สุดแรร์ 🌟", 1),
 ]
 
-DB_PATH = "points.db"
+# Voice reward config
+VOICE_REWARD_INTERVAL_SEC = 60 * 60   # 1 hour
+VOICE_REWARD_POINTS = 10
+VOICE_CHECK_EVERY_SEC = 60            # check every 60s
+VOICE_MUTE_LIMIT_SEC = 30 * 60        # 30 min muted -> reset current accum to 0
 
-# ======================
-# DISCORD INTENTS (สำคัญกับ voice)
-# ======================
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True         # สำคัญ: ให้เห็นสมาชิก/ห้องเสียง
-intents.voice_states = True
+# Settings keys (per guild)
+KEY_DAILY_CHANNEL = "daily_channel_id"
+KEY_GACHA_CHANNEL = "gacha_channel_id"
+KEY_VOICE_CHANNELS = "voice_channel_ids"  # comma-separated voice channel ids
+KEY_LOG_CHANNEL = "log_channel_id"
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+# Persistent button IDs (must be stable)
+BTN_DAILY_ID = "aurapoint_daily_claim"
+BTN_GACHA_ID = "aurapoint_gacha_roll"
+BTN_CHECK_ID = "aurapoint_check_points"
 
-# ======================
+# =========================
 # DB
-# ======================
+# =========================
 def init_db():
     with sqlite3.connect(DB_PATH) as con:
         con.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
             points INTEGER NOT NULL DEFAULT 0,
-            last_daily TEXT
+            last_daily TEXT,
+            PRIMARY KEY (guild_id, user_id)
         )
         """)
         con.execute("""
@@ -71,357 +76,521 @@ def init_db():
             PRIMARY KEY (guild_id, key)
         )
         """)
-        # เก็บเวลาสะสม voice + สถานะ mute ต่อเนื่อง
-        con.execute("""
-        CREATE TABLE IF NOT EXISTS voice_progress (
-            user_id INTEGER NOT NULL,
-            voice_channel_id TEXT NOT NULL,
-            active_minutes INTEGER NOT NULL DEFAULT 0,
-            muted_streak_minutes INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (user_id, voice_channel_id)
-        )
-        """)
         con.commit()
 
-def today_str_th():
-    return datetime.now(TH_TZ).strftime("%Y-%m-%d")
 
-def roll_reward():
-    total = sum(w for _, w in REWARDS)
-    r = random.uniform(0, total)
-    upto = 0
-    for reward, weight in REWARDS:
-        upto += weight
-        if upto >= r:
-            return reward
-    return REWARDS[-1][0]
+def get_setting(guild_id: int, key: str):
+    with sqlite3.connect(DB_PATH) as con:
+        row = con.execute(
+            "SELECT value FROM settings WHERE guild_id=? AND key=?",
+            (guild_id, key)
+        ).fetchone()
+        return row[0] if row else None
 
-def get_user(con, user_id: int):
-    cur = con.cursor()
-    cur.execute("SELECT points, last_daily FROM users WHERE user_id=?", (user_id,))
-    row = cur.fetchone()
-    if row is None:
-        cur.execute("INSERT INTO users (user_id, points, last_daily) VALUES (?, 0, NULL)", (user_id,))
-        con.commit()
-        return 0, None
-    return row[0], row[1]
 
-def set_points(con, user_id: int, points: int):
-    con.execute("UPDATE users SET points=? WHERE user_id=?", (points, user_id))
-    con.commit()
-
-def set_last_daily(con, user_id: int, date_str: str):
-    con.execute("UPDATE users SET last_daily=? WHERE user_id=?", (date_str, user_id))
-    con.commit()
-
-def set_setting(guild_id, key, value):
+def set_setting(guild_id: int, key: str, value: str):
     with sqlite3.connect(DB_PATH) as con:
         con.execute(
-            "INSERT OR REPLACE INTO settings (guild_id, key, value) VALUES (?, ?, ?)",
+            "INSERT INTO settings (guild_id, key, value) VALUES (?, ?, ?) "
+            "ON CONFLICT(guild_id, key) DO UPDATE SET value=excluded.value",
             (guild_id, key, value)
         )
         con.commit()
 
-def get_setting(guild_id, key):
-    with sqlite3.connect(DB_PATH) as con:
-        cur = con.cursor()
-        cur.execute("SELECT value FROM settings WHERE guild_id=? AND key=?", (guild_id, key))
-        row = cur.fetchone()
-        return row[0] if row else None
 
-
-
-def vp_get(con, user_id: int, voice_channel_id: int):
-    cur = con.cursor()
-    cur.execute("""
-        SELECT active_minutes, muted_streak_minutes
-        FROM voice_progress
-        WHERE user_id=? AND voice_channel_id=?
-    """, (user_id, str(voice_channel_id)))
-    row = cur.fetchone()
-    if row is None:
-        cur.execute("""
-            INSERT INTO voice_progress (user_id, voice_channel_id, active_minutes, muted_streak_minutes)
-            VALUES (?, ?, 0, 0)
-        """, (user_id, str(voice_channel_id)))
-        con.commit()
-        return 0, 0
-    return row[0], row[1]
-
-def vp_set(con, user_id: int, voice_channel_id: int, active_minutes: int, muted_streak_minutes: int):
-    con.execute("""
-        UPDATE voice_progress
-        SET active_minutes=?, muted_streak_minutes=?
-        WHERE user_id=? AND voice_channel_id=?
-    """, (active_minutes, muted_streak_minutes, user_id, str(voice_channel_id)))
+def ensure_user(con: sqlite3.Connection, guild_id: int, user_id: int):
+    row = con.execute(
+        "SELECT points, last_daily FROM users WHERE guild_id=? AND user_id=?",
+        (guild_id, user_id)
+    ).fetchone()
+    if row:
+        return row[0], row[1]
+    con.execute(
+        "INSERT INTO users (guild_id, user_id, points, last_daily) VALUES (?, ?, 0, NULL)",
+        (guild_id, user_id)
+    )
     con.commit()
+    return 0, None
 
-# ======================
-# VIEWS (แยกห้อง daily / roll)
-# ======================
+
+def get_points(guild_id: int, user_id: int) -> int:
+    with sqlite3.connect(DB_PATH) as con:
+        points, _ = ensure_user(con, guild_id, user_id)
+        return points
+
+
+def add_points(guild_id: int, user_id: int, amount: int) -> int:
+    with sqlite3.connect(DB_PATH) as con:
+        points, _ = ensure_user(con, guild_id, user_id)
+        points += amount
+        con.execute(
+            "UPDATE users SET points=? WHERE guild_id=? AND user_id=?",
+            (points, guild_id, user_id)
+        )
+        con.commit()
+        return points
+
+
+def set_points(guild_id: int, user_id: int, points: int):
+    with sqlite3.connect(DB_PATH) as con:
+        ensure_user(con, guild_id, user_id)
+        con.execute(
+            "UPDATE users SET points=? WHERE guild_id=? AND user_id=?",
+            (points, guild_id, user_id)
+        )
+        con.commit()
+
+
+def get_last_daily(guild_id: int, user_id: int):
+    with sqlite3.connect(DB_PATH) as con:
+        _, last_daily = ensure_user(con, guild_id, user_id)
+        return last_daily
+
+
+def set_last_daily(guild_id: int, user_id: int, last_daily: str):
+    with sqlite3.connect(DB_PATH) as con:
+        ensure_user(con, guild_id, user_id)
+        con.execute(
+            "UPDATE users SET last_daily=? WHERE guild_id=? AND user_id=?",
+            (last_daily, guild_id, user_id)
+        )
+        con.commit()
+
+
+# =========================
+# VOICE CHANNELS (multi)
+# =========================
+def get_voice_channel_ids(guild_id: int) -> list[int]:
+    raw = get_setting(guild_id, KEY_VOICE_CHANNELS)
+    if not raw:
+        return []
+    ids = []
+    for x in raw.split(","):
+        x = x.strip()
+        if x.isdigit():
+            ids.append(int(x))
+    return sorted(set(ids))
+
+
+def save_voice_channel_ids(guild_id: int, ids: list[int]):
+    ids = sorted(set(ids))
+    set_setting(guild_id, KEY_VOICE_CHANNELS, ",".join(map(str, ids)))
+
+
+def add_voice_channel_id(guild_id: int, channel_id: int) -> bool:
+    ids = get_voice_channel_ids(guild_id)
+    if channel_id in ids:
+        return False
+    ids.append(channel_id)
+    save_voice_channel_ids(guild_id, ids)
+    return True
+
+
+def remove_voice_channel_id(guild_id: int, channel_id: int) -> bool:
+    ids = get_voice_channel_ids(guild_id)
+    if channel_id not in ids:
+        return False
+    ids.remove(channel_id)
+    save_voice_channel_ids(guild_id, ids)
+    return True
+
+
+# =========================
+# REWARDS
+# =========================
+def roll_reward() -> str:
+    total = sum(w for _, w in REWARDS)
+    r = random.uniform(0, total)
+    upto = 0
+    for name, weight in REWARDS:
+        upto += weight
+        if upto >= r:
+            return name
+    return REWARDS[-1][0]
+
+
+# =========================
+# DISCORD BOT
+# =========================
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+intents.voice_states = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# =========================
+# LOGGING
+# =========================
+async def send_log(guild: discord.Guild, text: str = None, embed: discord.Embed = None):
+    if not guild:
+        return
+    log_ch_id = get_setting(guild.id, KEY_LOG_CHANNEL)
+    if not log_ch_id:
+        return
+
+    ch = guild.get_channel(int(log_ch_id))
+    if not ch:
+        return
+
+    try:
+        if embed:
+            await ch.send(embed=embed)
+        else:
+            await ch.send(text or "")
+    except Exception:
+        pass
+
+
+# =========================
+# UI VIEWS (Persistent)
+# =========================
 class DailyView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label=f"✅ รับ Daily +{DAILY_AMOUNT}", style=discord.ButtonStyle.success, custom_id="aura:daily")
-    async def daily_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        daily_ch = get_setting(interaction.guild_id, "daily_channel_id")
-        if daily_ch and str(interaction.channel_id) != str(daily_ch):
-            return await interaction.response.send_message(
-                "ปุ่ม Daily ใช้ได้เฉพาะห้อง Daily ที่ตั้งไว้เท่านั้นนะ 💜",
-                ephemeral=True
-            )
+    @discord.ui.button(label="รับ Daily +10", style=discord.ButtonStyle.success, custom_id=BTN_DAILY_ID)
+    async def daily_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not interaction.guild_id:
+            return await interaction.response.send_message("ใช้คำสั่งนี้ในเซิร์ฟก่อนนะ", ephemeral=True)
 
+        guild_id = interaction.guild_id
         user_id = interaction.user.id
-        with sqlite3.connect(DB_PATH) as con:
-            points, last_daily = get_user(con, user_id)
-            today = today_str_th()
 
-            if last_daily == today:
-                return await interaction.response.send_message(
-                    f"วันนี้รับไปแล้วน้า 😝\nแต้มตอนนี้: **{points}**",
-                    ephemeral=True
-                )
+        daily_ch = get_setting(guild_id, KEY_DAILY_CHANNEL)
+        if daily_ch and str(interaction.channel_id) != str(daily_ch):
+            return await interaction.response.send_message("❌ ปุ่ม Daily ใช้ได้เฉพาะห้องที่ตั้งไว้เท่านั้น", ephemeral=True)
 
-            points += DAILY_AMOUNT
-            set_points(con, user_id, points)
-            set_last_daily(con, user_id, today)
+        today_str = datetime.now(TZ).date().isoformat()
+        last = get_last_daily(guild_id, user_id)
 
+        if last == today_str:
+            return await interaction.response.send_message("⛔ วันนี้รับไปแล้วนะ พรุ่งนี้ค่อยมากดใหม่ 💜", ephemeral=True)
+
+        before_pts = get_points(guild_id, user_id)
+        new_points = add_points(guild_id, user_id, DAILY_AMOUNT)
+        set_last_daily(guild_id, user_id, today_str)
+
+        # player ephemeral
         await interaction.response.send_message(
-            f"รับ Daily สำเร็จ! ได้ **+{DAILY_AMOUNT}** แต้ม ✅\nแต้มตอนนี้: **{points}**",
+            f"✅ รับ Daily +{DAILY_AMOUNT} แต้มแล้ว!\nแต้มคงเหลือ: **{new_points}**",
             ephemeral=True
         )
 
-class RollView(discord.ui.View):
+        # admin log (optional)
+        emb = discord.Embed(title="✅ DAILY CLAIM", color=0x2ECC71)
+        emb.add_field(name="ผู้กด", value=f"<@{interaction.user.id}>", inline=False)
+        emb.add_field(name="ก่อนกด", value=str(before_pts), inline=True)
+        emb.add_field(name="หลังกด", value=str(new_points), inline=True)
+        emb.set_footer(text=datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"))
+        await send_log(interaction.guild, embed=emb)
+
+
+class GachaView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(
-        label=f"🎲 สุ่มรางวัล (เสีย {ROLL_COST} แต้ม)",
-        style=discord.ButtonStyle.primary,
-        custom_id="aura:roll"
-    )
-    async def roll_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        roll_ch = get_setting(interaction.guild_id, "roll_channel_id")
-        if roll_ch and str(interaction.channel_id) != str(roll_ch):
+    @discord.ui.button(label=f"สุ่มรางวัล (-{ROLL_COST} แต้ม)", style=discord.ButtonStyle.primary, custom_id=BTN_GACHA_ID)
+    async def gacha_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not interaction.guild_id:
+            return await interaction.response.send_message("ใช้คำสั่งนี้ในเซิร์ฟก่อนนะ", ephemeral=True)
+
+        guild_id = interaction.guild_id
+        user_id = interaction.user.id
+
+        gacha_ch = get_setting(guild_id, KEY_GACHA_CHANNEL)
+        if gacha_ch and str(interaction.channel_id) != str(gacha_ch):
+            return await interaction.response.send_message("❌ ปุ่มสุ่มรางวัลใช้ได้เฉพาะห้องที่ตั้งไว้เท่านั้น", ephemeral=True)
+
+        pts_before = get_points(guild_id, user_id)
+        if pts_before < ROLL_COST:
             return await interaction.response.send_message(
-                "ปุ่มสุ่มใช้ได้เฉพาะห้องสุ่มรางวัลที่ตั้งไว้เท่านั้นน้า 💜",
+                f"❌ แต้มไม่พอ! ต้องใช้ {ROLL_COST} แต้ม (ตอนนี้มี {pts_before})",
                 ephemeral=True
             )
 
-        user_id = interaction.user.id
-        with sqlite3.connect(DB_PATH) as con:
-            points, _ = get_user(con, user_id)
+        # Deduct then roll
+        set_points(guild_id, user_id, pts_before - ROLL_COST)
+        reward = roll_reward()
+        pts_after = get_points(guild_id, user_id)
 
-            if points < ROLL_COST:
-                return await interaction.response.send_message(
-                    f"แต้มไม่พอจ้า ต้องใช้ **{ROLL_COST}** แต้ม\nแต้มตอนนี้: **{points}**",
-                    ephemeral=True
-                )
-
-            points -= ROLL_COST
-            reward = roll_reward()
-            set_points(con, user_id, points)
-
+        # player ephemeral (เดิมดีแล้ว)
         await interaction.response.send_message(
-            f"🎉 ผลสุ่มของ {interaction.user.mention}\n"
-            f"รางวัล: **{reward}**\n"
-            f"แต้มคงเหลือ: **{points}**"
-        )
-
-    @discord.ui.button(
-        label="📊 เช็คคะแนน",
-        style=discord.ButtonStyle.secondary,
-        custom_id="aura:checkpoints"
-    )
-    async def checkpoints_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        user_id = interaction.user.id
-        with sqlite3.connect(DB_PATH) as con:
-            points, _ = get_user(con, user_id)
-
-        await interaction.response.send_message(
-            f"คะแนนของคุณตอนนี้: **{points}** แต้ม 🪙",
+            f"🎲 ผลสุ่มของคุณ: **{reward}**\nแต้มคงเหลือ: **{pts_after}**",
             ephemeral=True
         )
 
+        # admin log (ตามที่ฟุขอ: แค่ก่อน/หลัง/ได้อะไร + ผู้กดเป็น @id)
+        emb = discord.Embed(title="🎲 GACHA LOG", color=0x3498DB)
+        emb.add_field(name="ผู้กด", value=f"<@{interaction.user.id}>", inline=False)
+        emb.add_field(name="แต้มก่อนกด", value=str(pts_before), inline=True)
+        emb.add_field(name="แต้มหลังกด", value=str(pts_after), inline=True)
+        emb.add_field(name="รางวัลที่ได้", value=reward, inline=False)
+        emb.set_footer(text=datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"))
+        await send_log(interaction.guild, embed=emb)
 
-# ======================
+    @discord.ui.button(label="เช็คคะแนน", style=discord.ButtonStyle.secondary, custom_id=BTN_CHECK_ID)
+    async def check_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not interaction.guild_id:
+            return await interaction.response.send_message("ใช้คำสั่งนี้ในเซิร์ฟก่อนนะ", ephemeral=True)
+
+        guild_id = interaction.guild_id
+        pts = get_points(guild_id, interaction.user.id)
+        await interaction.response.send_message(f"📊 แต้มของคุณตอนนี้: **{pts}**", ephemeral=True)
+
+
+# =========================
+# COMMANDS
+# =========================
+@bot.command()
+async def points(ctx: commands.Context):
+    if not ctx.guild:
+        return await ctx.send("ใช้ในเซิร์ฟก่อนนะ")
+    pts = get_points(ctx.guild.id, ctx.author.id)
+    await ctx.send(f"📊 {ctx.author.mention} มีแต้ม: **{pts}**")
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setupdaily(ctx: commands.Context, channel: discord.TextChannel = None):
+    if not ctx.guild:
+        return await ctx.send("ใช้ในเซิร์ฟก่อนนะ")
+    if channel is None:
+        channel = ctx.channel
+
+    set_setting(ctx.guild.id, KEY_DAILY_CHANNEL, str(channel.id))
+
+    embed = discord.Embed(
+        title="AURA DAILY POINT",
+        description=f"กดรับแต้มรายวันได้วันละ 1 ครั้ง (+{DAILY_AMOUNT} แต้ม)\nผลตอบกลับเห็นเฉพาะคนกด (ไม่รกห้อง)",
+        color=0x9B59B6
+    )
+
+    await channel.send(embed=embed, view=DailyView())
+    await ctx.send(f"✅ ตั้งปุ่ม Daily ที่ {channel.mention} แล้ว")
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setupgacha(ctx: commands.Context, channel: discord.TextChannel = None):
+    if not ctx.guild:
+        return await ctx.send("ใช้ในเซิร์ฟก่อนนะ")
+    if channel is None:
+        channel = ctx.channel
+
+    set_setting(ctx.guild.id, KEY_GACHA_CHANNEL, str(channel.id))
+
+    reward_lines = "\n".join([f"• {name} (weight {w})" for name, w in REWARDS])
+    embed = discord.Embed(
+        title="AURA GACHA",
+        description=f"กดสุ่มรางวัล: ใช้ **{ROLL_COST}** แต้ม/ครั้ง\nผลสุ่มเป็น Ephemeral (เห็นเฉพาะคนกด)\n\n**รายการรางวัล:**\n{reward_lines}",
+        color=0x3498DB
+    )
+
+    await channel.send(embed=embed, view=GachaView())
+    await ctx.send(f"✅ ตั้งปุ่ม Gacha ที่ {channel.mention} แล้ว")
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setlogchannel(ctx: commands.Context, channel: discord.TextChannel = None):
+    if not ctx.guild:
+        return await ctx.send("ใช้ในเซิร์ฟก่อนนะ")
+    if channel is None:
+        channel = ctx.channel
+
+    set_setting(ctx.guild.id, KEY_LOG_CHANNEL, str(channel.id))
+    await ctx.send(f"✅ ตั้งห้อง Logs เป็น {channel.mention} แล้ว")
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def addvoicechannel(ctx: commands.Context, channel: discord.VoiceChannel = None):
+    if not ctx.guild:
+        return await ctx.send("ใช้ในเซิร์ฟก่อนนะ")
+    if channel is None:
+        return await ctx.send("❌ ใช้แบบนี้: `!addvoicechannel #ชื่อห้องเสียง`")
+
+    ok = add_voice_channel_id(ctx.guild.id, channel.id)
+    if ok:
+        await ctx.send(f"✅ เพิ่มห้องเสียงรับแต้ม: {channel.mention}")
+    else:
+        await ctx.send(f"ℹ️ ห้องนี้อยู่ในลิสต์แล้ว: {channel.mention}")
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def removevoicechannel(ctx: commands.Context, channel: discord.VoiceChannel = None):
+    if not ctx.guild:
+        return await ctx.send("ใช้ในเซิร์ฟก่อนนะ")
+    if channel is None:
+        return await ctx.send("❌ ใช้แบบนี้: `!removevoicechannel #ชื่อห้องเสียง`")
+
+    ok = remove_voice_channel_id(ctx.guild.id, channel.id)
+    if ok:
+        await ctx.send(f"🗑️ ลบห้องเสียงรับแต้ม: {channel.mention}")
+    else:
+        await ctx.send(f"ℹ️ ห้องนี้ไม่ได้อยู่ในลิสต์: {channel.mention}")
+
+
+@bot.command()
+async def listvoicechannels(ctx: commands.Context):
+    if not ctx.guild:
+        return await ctx.send("ใช้ในเซิร์ฟก่อนนะ")
+
+    ids = get_voice_channel_ids(ctx.guild.id)
+    if not ids:
+        return await ctx.send("📌 ยังไม่ได้ตั้งห้องเสียงรับแต้ม\nใช้ `!addvoicechannel #ห้องเสียง`")
+
+    lines = []
+    for cid in ids:
+        ch = ctx.guild.get_channel(cid)
+        lines.append(ch.mention if ch else f"`{cid}` (หาไม่เจอ)")
+    await ctx.send("🎙 ห้องเสียงที่รับแต้มตอนนี้:\n" + "\n".join(f"• {x}" for x in lines))
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def showsettings(ctx: commands.Context):
+    if not ctx.guild:
+        return await ctx.send("ใช้ในเซิร์ฟก่อนนะ")
+
+    g = ctx.guild.id
+    daily = get_setting(g, KEY_DAILY_CHANNEL)
+    gacha = get_setting(g, KEY_GACHA_CHANNEL)
+    logch = get_setting(g, KEY_LOG_CHANNEL)
+    voice_ids = get_voice_channel_ids(g)
+
+    def ch_mention(cid):
+        if not cid:
+            return "ยังไม่ตั้ง"
+        return f"<#{cid}>"
+
+    voice_str = "ยังไม่ตั้ง"
+    if voice_ids:
+        voice_str = "\n".join([f"• <#{cid}>" for cid in voice_ids])
+
+    await ctx.send(
+        "⚙️ **Settings ของเซิร์ฟนี้**\n"
+        f"Daily Channel: {ch_mention(daily)}\n"
+        f"Gacha Channel: {ch_mention(gacha)}\n"
+        f"Log Channel: {ch_mention(logch)}\n"
+        f"Voice Channels:\n{voice_str}"
+    )
+
+
+# =========================
 # VOICE REWARD LOOP
-# ======================
-def is_muted_or_deaf(member: discord.Member) -> bool:
-    vs = member.voice
-    if not vs:
+# =========================
+# progress[(guild_id, user_id)] = {"accum": seconds, "muted": seconds}
+voice_progress = {}
+
+
+def is_muted(member: discord.Member) -> bool:
+    if not member.voice:
         return True
-    # self_mute/self_deaf = ผู้ใช้กดเอง
-    # mute/deaf = ถูกเซิร์ฟเวอร์ mute/deaf
-    return bool(vs.self_mute or vs.self_deaf or vs.mute or vs.deaf)
+    v = member.voice
+    return bool(v.self_mute or v.self_deaf or v.mute or v.deaf)
 
-@tasks.loop(minutes=VOICE_CHECK_EVERY_MIN)
+
+async def safe_dm(member: discord.Member, text: str):
+    try:
+        await member.send(text)
+    except Exception:
+        pass
+
+
+@tasks.loop(seconds=VOICE_CHECK_EVERY_SEC)
 async def voice_reward_loop():
+    seen = set()  # (guild_id, user_id)
+
     for guild in bot.guilds:
-        voice_channel_id = get_setting(guild.id, "voice_channel_id")
-        if not voice_channel_id:
+        allowed_ids = get_voice_channel_ids(guild.id)
+        if not allowed_ids:
             continue
 
-        vc_id = int(voice_channel_id)
-        channel = guild.get_channel(vc_id)
-        if channel is None or not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
-            continue
-
-        for member in list(channel.members):
-            if member.bot:
+        for vc_id in allowed_ids:
+            channel = guild.get_channel(int(vc_id))
+            if channel is None or not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
                 continue
 
-            # ... (โค้ดนับเวลาเดิมของฟุอยู่ต่อจากนี้ได้เลย)
-
-
-            muted = is_muted_or_deaf(member)
-
-            with sqlite3.connect(DB_PATH) as con:
-                active_min, muted_streak = vp_get(con, member.id, vc_id)
-
-                if muted:
-                    muted_streak += VOICE_CHECK_EVERY_MIN
-
-                    # ❗ ถ้า mute เกิน 30 นาที → รีเซ็ตเวลาสะสมในชั่วโมงนี้
-                    if muted_streak >= VOICE_MUTE_LIMIT_MIN:
-                        active_min = 0
-                        muted_streak = 0
-
-                    vp_set(con, member.id, vc_id, active_min, muted_streak)
+            for member in list(channel.members):
+                if member.bot:
                     continue
 
-                # ไม่ muted แล้ว => reset streak
-                muted_streak = 0
+                key = (guild.id, member.id)
+                seen.add(key)
 
-                # เพิ่มเวลาที่ “นับได้”
-                active_min += VOICE_CHECK_EVERY_MIN
+                state = voice_progress.get(key, {"accum": 0, "muted": 0})
 
-                # ถ้าครบ 60 นาที ให้รางวัล (สะสมต่อได้)
-                if active_min >= VOICE_REWARD_MINUTES:
-                    # แจกเป็นจำนวนครั้งตามชั่วโมงที่ครบ
-                    times = active_min // VOICE_REWARD_MINUTES
-                    gain = times * VOICE_REWARD_POINTS
-                    leftover = active_min % VOICE_REWARD_MINUTES
+                if is_muted(member):
+                    state["muted"] += VOICE_CHECK_EVERY_SEC
+                    if state["muted"] >= VOICE_MUTE_LIMIT_SEC:
+                        state["accum"] = 0
+                    voice_progress[key] = state
+                    continue
 
-                    # เพิ่มแต้ม
-                    points, _ = get_user(con, member.id)
-                    points += gain
-                    set_points(con, member.id, points)
+                # not muted
+                state["muted"] = 0
+                state["accum"] += VOICE_CHECK_EVERY_SEC
 
-                    # อัปเดตเหลือเวลาสะสมที่ยังไม่ครบชั่วโมง
-                    vp_set(con, member.id, vc_id, leftover, muted_streak)
+                # award for each full interval
+                while state["accum"] >= VOICE_REWARD_INTERVAL_SEC:
+                    state["accum"] -= VOICE_REWARD_INTERVAL_SEC
+                    before_pts = get_points(guild.id, member.id)
+                    new_pts = add_points(guild.id, member.id, VOICE_REWARD_POINTS)
 
-                    # แจ้ง DM (ไม่รกห้อง)
-                    try:
-                        await member.send(
-                            f"🎧 อยู่ห้องเสียงครบ {times} ชม. ได้ **+{gain}** แต้ม!\n"
-                            f"แต้มตอนนี้: **{points}**"
-                        )
-                    except:
-                        pass
-                else:
-                    vp_set(con, member.id, vc_id, active_min, muted_streak)
+                    await safe_dm(
+                        member,
+                        f"🎧 คุณอยู่ห้องเสียงครบ 1 ชั่วโมง ได้รับ +{VOICE_REWARD_POINTS} แต้ม!\n"
+                        f"แต้มในเซิร์ฟ **{guild.name}** ตอนนี้: {new_pts}"
+                    )
+
+                    # optional admin log
+                    emb = discord.Embed(title="🎧 VOICE REWARD", color=0x9B59B6)
+                    emb.add_field(name="ผู้ได้รับ", value=f"<@{member.id}>", inline=False)
+                    emb.add_field(name="ก่อนรับ", value=str(before_pts), inline=True)
+                    emb.add_field(name="หลังรับ", value=str(new_pts), inline=True)
+                    emb.set_footer(text=datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"))
+                    await send_log(guild, embed=emb)
+
+                voice_progress[key] = state
+
+    # Remove progress for users not currently in allowed channels
+    for key in list(voice_progress.keys()):
+        if key not in seen:
+            del voice_progress[key]
+
 
 @voice_reward_loop.before_loop
 async def before_voice_loop():
     await bot.wait_until_ready()
+    await asyncio.sleep(2)
 
-# ======================
+
+# =========================
 # EVENTS
-# ======================
+# =========================
 @bot.event
 async def on_ready():
     init_db()
 
-    # ทำให้ปุ่ม persistent หลังรีสตาร์ท
+    # Register persistent views so buttons keep working after restart
     bot.add_view(DailyView())
-    bot.add_view(RollView())
+    bot.add_view(GachaView())
 
     if not voice_reward_loop.is_running():
         voice_reward_loop.start()
 
-    print(f"🤖 Logged in as {bot.user}")
+    print(f"Logged in as {bot.user}")
 
-# ======================
-# COMMANDS (User)
-# ======================
-@bot.command()
-async def points(ctx):
-    with sqlite3.connect(DB_PATH) as con:
-        pts, last = get_user(con, ctx.author.id)
-    last_txt = last if last else "ยังไม่เคยรับ"
-    await ctx.send(f"แต้มของ {ctx.author.mention} = **{pts}** | Daily ล่าสุด: **{last_txt}**")
 
-# ======================
-# COMMANDS (Admin setup)
-# ======================
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def setdailychannel(ctx):
-    set_setting(ctx.guild.id, "daily_channel_id", str(ctx.channel.id))
-    await ctx.send(f"✅ ตั้งห้อง Daily แล้ว: {ctx.channel.mention}")
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def setrollchannel(ctx):
-    set_setting(ctx.guild.id, "roll_channel_id", str(ctx.channel.id))
-    await ctx.send(f"✅ ตั้งห้องสุ่มรางวัลแล้ว: {ctx.channel.mention}")
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def setvoicechannel(ctx, voice_channel_id: int):
-    set_setting(ctx.guild.id, "voice_channel_id", str(voice_channel_id))
-    await ctx.send(f"✅ ตั้งห้องเสียงสะสมแต้มแล้ว: `{voice_channel_id}`")
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def setupdaily(ctx):
-    embed = discord.Embed(
-        title="✅ AURA DAILY POINT",
-        description=f"กดรับได้วันละ 1 ครั้ง ได้ **+{DAILY_AMOUNT}** แต้ม"
-    )
-
-    embed.set_image(url="https://media.discordapp.net/attachments/1241811407310164030/1462800299029696637/1.png")
-
-    await ctx.send(embed=embed, view=DailyView())
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def setuproll(ctx):
-    embed = discord.Embed(
-        title="🎲 AURA GACHA",
-        description=f"กดสุ่มรางวัล ใช้ **{ROLL_COST}** แต้ม/ครั้ง"
-    )
-
-    embed.set_image(url="https://media.discordapp.net/attachments/1241811407310164030/1462803920156889214/unnamed.jpg")
-
-    await ctx.send(embed=embed, view=RollView())
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def showsettings(ctx):
-    d = get_setting(ctx.guild.id, "daily_channel_id")
-    r = get_setting(ctx.guild.id, "roll_channel_id")
-    v = get_setting(ctx.guild.id, "voice_channel_id")
-    await ctx.send(
-        "⚙️ Settings\n"
-        f"- daily_channel_id: `{d}`\n"
-        f"- roll_channel_id: `{r}`\n"
-        f"- voice_channel_id: `{v}`"
-    )
-
-@setdailychannel.error
-@setrollchannel.error
-@setvoicechannel.error
-@setupdaily.error
-@setuproll.error
-@showsettings.error
-async def admin_cmd_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("ต้องเป็นแอดมินถึงใช้คำสั่งนี้ได้ ❌")
-
-# ======================
+# =========================
 # RUN
-# ======================
-bot.run(TOKEN)
+# =========================
+if __name__ == "__main__":
+    init_db()
+    TOKEN = os.getenv("DISCORD_TOKEN")
+    if not TOKEN:
+        raise RuntimeError("DISCORD_TOKEN not set")
+    bot.run(TOKEN)

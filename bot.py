@@ -65,8 +65,10 @@ def init_db():
         """)
         con.execute("""
         CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
+            guild_id INTEGER NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT,
+            PRIMARY KEY (guild_id, key)
         )
         """)
         # เก็บเวลาสะสม voice + สถานะ mute ต่อเนื่อง
@@ -112,17 +114,22 @@ def set_last_daily(con, user_id: int, date_str: str):
     con.execute("UPDATE users SET last_daily=? WHERE user_id=?", (date_str, user_id))
     con.commit()
 
-def set_setting(key: str, value: str):
+def set_setting(guild_id, key, value):
     with sqlite3.connect(DB_PATH) as con:
-        con.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+        con.execute(
+            "INSERT OR REPLACE INTO settings (guild_id, key, value) VALUES (?, ?, ?)",
+            (guild_id, key, value)
+        )
         con.commit()
 
-def get_setting(key: str):
+def get_setting(guild_id, key):
     with sqlite3.connect(DB_PATH) as con:
         cur = con.cursor()
-        cur.execute("SELECT value FROM settings WHERE key=?", (key,))
+        cur.execute("SELECT value FROM settings WHERE guild_id=? AND key=?", (guild_id, key))
         row = cur.fetchone()
         return row[0] if row else None
+
+
 
 def vp_get(con, user_id: int, voice_channel_id: int):
     cur = con.cursor()
@@ -158,7 +165,7 @@ class DailyView(discord.ui.View):
 
     @discord.ui.button(label=f"✅ รับ Daily +{DAILY_AMOUNT}", style=discord.ButtonStyle.success, custom_id="aura:daily")
     async def daily_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        daily_ch = get_setting("daily_channel_id")
+        daily_ch = get_setting(interaction.guild_id, "daily_channel_id")
         if daily_ch and str(interaction.channel_id) != str(daily_ch):
             return await interaction.response.send_message(
                 "ปุ่ม Daily ใช้ได้เฉพาะห้อง Daily ที่ตั้งไว้เท่านั้นนะ 💜",
@@ -195,7 +202,7 @@ class RollView(discord.ui.View):
         custom_id="aura:roll"
     )
     async def roll_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        roll_ch = get_setting("roll_channel_id")
+        roll_ch = get_setting(interaction.guild_id, "roll_channel_id")
         if roll_ch and str(interaction.channel_id) != str(roll_ch):
             return await interaction.response.send_message(
                 "ปุ่มสุ่มใช้ได้เฉพาะห้องสุ่มรางวัลที่ตั้งไว้เท่านั้นน้า 💜",
@@ -251,23 +258,22 @@ def is_muted_or_deaf(member: discord.Member) -> bool:
 
 @tasks.loop(minutes=VOICE_CHECK_EVERY_MIN)
 async def voice_reward_loop():
-    voice_channel_id = get_setting("voice_channel_id")
-    if not voice_channel_id:
-        return
-
-    vc_id = int(voice_channel_id)
-
     for guild in bot.guilds:
-        channel = guild.get_channel(vc_id)
-        if channel is None:
-            continue
-        if not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
+        voice_channel_id = get_setting(guild.id, "voice_channel_id")
+        if not voice_channel_id:
             continue
 
-        # คนที่อยู่ในห้องเสียง ณ ตอนนั้น
+        vc_id = int(voice_channel_id)
+        channel = guild.get_channel(vc_id)
+        if channel is None or not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
+            continue
+
         for member in list(channel.members):
             if member.bot:
                 continue
+
+            # ... (โค้ดนับเวลาเดิมของฟุอยู่ต่อจากนี้ได้เลย)
+
 
             muted = is_muted_or_deaf(member)
 
@@ -353,19 +359,19 @@ async def points(ctx):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def setdailychannel(ctx):
-    set_setting("daily_channel_id", str(ctx.channel.id))
+    set_setting(ctx.guild.id, "daily_channel_id", str(ctx.channel.id))
     await ctx.send(f"✅ ตั้งห้อง Daily แล้ว: {ctx.channel.mention}")
 
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def setrollchannel(ctx):
-    set_setting("roll_channel_id", str(ctx.channel.id))
+    set_setting(ctx.guild.id, "roll_channel_id", str(ctx.channel.id))
     await ctx.send(f"✅ ตั้งห้องสุ่มรางวัลแล้ว: {ctx.channel.mention}")
 
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def setvoicechannel(ctx, voice_channel_id: int):
-    set_setting("voice_channel_id", str(voice_channel_id))
+    set_setting(ctx.guild.id, "voice_channel_id", str(voice_channel_id))
     await ctx.send(f"✅ ตั้งห้องเสียงสะสมแต้มแล้ว: `{voice_channel_id}`")
 
 @bot.command()
@@ -395,9 +401,9 @@ async def setuproll(ctx):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def showsettings(ctx):
-    d = get_setting("daily_channel_id")
-    r = get_setting("roll_channel_id")
-    v = get_setting("voice_channel_id")
+    d = get_setting(ctx.guild.id, "daily_channel_id")
+    r = get_setting(ctx.guild.id, "roll_channel_id")
+    v = get_setting(ctx.guild.id, "voice_channel_id")
     await ctx.send(
         "⚙️ Settings\n"
         f"- daily_channel_id: `{d}`\n"

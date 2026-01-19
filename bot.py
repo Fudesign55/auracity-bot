@@ -365,6 +365,7 @@ async def setupdaily(ctx: commands.Context, channel: discord.TextChannel = None)
         description=f"กดรับแต้มรายวันได้วันละ 1 ครั้ง (+{DAILY_AMOUNT} แต้ม)\nผลตอบกลับเห็นเฉพาะคนกด (ไม่รกห้อง)",
         color=0x9B59B6
     )
+    embed.set_image(url="https://media.discordapp.net/attachments/1241811407310164030/1462800299029696637/1.png")
 
     await channel.send(embed=embed, view=DailyView())
     await ctx.send(f"✅ ตั้งปุ่ม Daily ที่ {channel.mention} แล้ว")
@@ -386,6 +387,7 @@ async def setupgacha(ctx: commands.Context, channel: discord.TextChannel = None)
         description=f"กดสุ่มรางวัล: ใช้ **{ROLL_COST}** แต้ม/ครั้ง\nผลสุ่มเป็น Ephemeral (เห็นเฉพาะคนกด)\n\n**รายการรางวัล:**\n{reward_lines}",
         color=0x3498DB
     )
+    embed.set_image(url="https://media.discordapp.net/attachments/1241811407310164030/1462803920156889214/unnamed.jpg")
 
     await channel.send(embed=embed, view=GachaView())
     await ctx.send(f"✅ ตั้งปุ่ม Gacha ที่ {channel.mention} แล้ว")
@@ -594,3 +596,4 @@ if __name__ == "__main__":
     if not TOKEN:
         raise RuntimeError("DISCORD_TOKEN not set")
     bot.run(TOKEN)
+

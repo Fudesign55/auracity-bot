@@ -256,21 +256,28 @@ def update_voice_progress(guild_id: int, user_id: int, channel_id, active_minute
 
 
 # ======================
-# Logging
+# Logging (แยก 2 ห้อง)
 # ======================
-async def send_log(guild: discord.Guild, text: str):
-    if not guild:
+async def _send_log_to_channel_id(guild: discord.Guild, channel_id, text: str):
+    if not guild or not channel_id:
         return
-    log_ch_id = get_setting(guild.id, "log_channel_id", None)
-    if not log_ch_id:
-        return
-    ch = guild.get_channel(int(log_ch_id))
+    ch = guild.get_channel(int(channel_id))
     if not ch:
         return
     try:
         await ch.send(text)
     except Exception:
         pass
+
+
+async def send_daily_log(guild: discord.Guild, text: str):
+    ch_id = get_setting(guild.id, "daily_log_channel_id", None)
+    await _send_log_to_channel_id(guild, ch_id, text)
+
+
+async def send_gacha_log(guild: discord.Guild, text: str):
+    ch_id = get_setting(guild.id, "gacha_log_channel_id", None)
+    await _send_log_to_channel_id(guild, ch_id, text)
 
 
 # ======================
@@ -281,6 +288,7 @@ def roll_reward_name() -> str:
     pick = random.uniform(0, total)
     cur = 0.0
     for r in GACHA_REWARDS:
+
         cur += r["rate"]
         if pick <= cur:
             return r["name"]
@@ -288,25 +296,9 @@ def roll_reward_name() -> str:
 
 
 # ======================
-# UI Views
+# UI Views (ไม่มีปุ่มเช็คคะแนนแล้ว)
 # ======================
-class PointsButtonMixin:
-    @discord.ui.button(label="📊 เช็คคะแนน", style=discord.ButtonStyle.secondary, custom_id="aura:checkpoints")
-    async def checkpoints_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.guild:
-            return await interaction.response.send_message("ใช้ในเซิร์ฟเวอร์เท่านั้นนะ", ephemeral=True)
-
-        gid = interaction.guild.id
-        uid = interaction.user.id
-        pts = get_points(gid, uid)
-
-        await interaction.response.send_message(
-            f"คะแนนของคุณตอนนี้: **{pts}** แต้ม ✅",
-            ephemeral=True
-        )
-
-
-class DailyView(discord.ui.View, PointsButtonMixin):
+class DailyView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -321,7 +313,6 @@ class DailyView(discord.ui.View, PointsButtonMixin):
 
         gid = interaction.guild.id
         uid = interaction.user.id
-
         daily_amount = int(get_setting(gid, "daily_amount", DEFAULT_DAILY_AMOUNT))
 
         pts_before = get_points(gid, uid)
@@ -341,19 +332,19 @@ class DailyView(discord.ui.View, PointsButtonMixin):
             ephemeral=True
         )
 
-        # LOG (ห้องแอดมิน)
-        await send_log(
-    interaction.guild,
-    f"""🟩 **DAILY CLAIM**
-👤 ผู้เล่น: <@{uid}>
-➕ ได้รับ: +{daily_amount} แต้ม
-📊 คะแนน: {before} → {after}
-"""
-)
+        # LOG (Daily แยกห้อง)
+        await send_daily_log(
+            interaction.guild,
+            "\n".join([
+                "🟩 **DAILY CLAIM**",
+                f"👤 ผู้เล่น: <@{uid}>",
+                f"➕ ได้รับ: +{daily_amount} แต้ม",
+                f"📊 คะแนน: {before} → {after}",
+            ])
+        )
 
 
-
-class RollView(discord.ui.View, PointsButtonMixin):
+class RollView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -378,35 +369,36 @@ class RollView(discord.ui.View, PointsButtonMixin):
             )
 
         roll_cost = int(get_setting(gid, "roll_cost", DEFAULT_ROLL_COST))
-
         pts_before = get_points(gid, uid)
+
         if pts_before < roll_cost:
             return await interaction.response.send_message(
                 f"แต้มไม่พอจ้า 😅 ต้องใช้ {roll_cost} แต้ม/ครั้ง\nตอนนี้คุณมี: **{pts_before}** แต้ม",
                 ephemeral=True
             )
 
-        # หักแต้ม + สุ่มรางวัล
+        # หักแต้ม + สุ่ม
         set_points(gid, uid, pts_before - roll_cost)
         reward = roll_reward_name()
         pts_after = get_points(gid, uid)
 
-        # ส่งผลให้คนกด (Ephemeral)
+        # ผลลัพธ์ให้คนกด (Ephemeral)
         await interaction.response.send_message(
             f"🎉 คุณได้รางวัล: **{reward}**\nแต้มคงเหลือ: **{pts_after}**",
             ephemeral=True
         )
 
-        # LOG (ห้องแอดมิน) — ขอเป็น clickable id ตามที่ฟุต้องการ
-        await send_log(
-    interaction.guild,
-    f"""🎲 **AURA GACHA**
-👤 ผู้เล่น: <@{uid}>
-🎁 รางวัล: **{reward}**
-💸 ใช้แต้ม: -{roll_cost}
-📊 คะแนน: {pts_before} → {pts_after}
-"""
-)
+        # LOG (Gacha แยกห้อง)
+        await send_gacha_log(
+            interaction.guild,
+            "\n".join([
+                "🎲 **AURA GACHA**",
+                f"👤 ผู้เล่น: <@{uid}>",
+                f"🎁 รางวัล: **{reward}**",
+                f"💸 ใช้แต้ม: -{roll_cost}",
+                f"📊 คะแนน: {pts_before} → {pts_after}",
+            ])
+        )
 
 
 # ======================
@@ -419,7 +411,6 @@ def build_gacha_embed(guild_id: int) -> discord.Embed:
         description=f"กดสุ่มรางวัล ใช้ **{roll_cost}** แต้ม/ครั้ง",
     )
 
-    # ใส่รูป (ถ้าตั้งค่าไว้)
     img = get_setting(guild_id, "gacha_image_url", None)
     if img:
         embed.set_image(url=img)
@@ -470,11 +461,19 @@ async def setupdaily(ctx: commands.Context):
     await ctx.send(embed=embed, view=DailyView())
 
 
+# ---- LOG CHANNELS (แยกกัน)
 @bot.command()
 @commands.has_permissions(administrator=True)
-async def setlogchannel(ctx: commands.Context, channel: discord.TextChannel):
-    set_setting(ctx.guild.id, "log_channel_id", str(channel.id))
-    await ctx.send(f"ตั้งห้อง Logs เป็น {channel.mention} แล้ว ✅")
+async def setdailylogchannel(ctx: commands.Context, channel: discord.TextChannel):
+    set_setting(ctx.guild.id, "daily_log_channel_id", str(channel.id))
+    await ctx.send(f"ตั้งห้อง Daily Logs เป็น {channel.mention} แล้ว ✅")
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setgachalogchannel(ctx: commands.Context, channel: discord.TextChannel):
+    set_setting(ctx.guild.id, "gacha_log_channel_id", str(channel.id))
+    await ctx.send(f"ตั้งห้อง Gacha Logs เป็น {channel.mention} แล้ว ✅")
 
 
 @bot.command()
@@ -501,7 +500,6 @@ async def setrollcost(ctx: commands.Context, amount: int):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def setgachaimage(ctx: commands.Context, url: str):
-    # ใส่รูปตรง embed.set_image (URL ต้องเข้าถึงได้สาธารณะ)
     set_setting(ctx.guild.id, "gacha_image_url", url)
     await ctx.send("ตั้งรูปกาชาแล้ว ✅ (สั่ง !setupgacha ใหม่เพื่อดูผล)")
 
@@ -558,7 +556,7 @@ async def setvoicerewardpoints(ctx: commands.Context, points: int):
 @commands.has_permissions(administrator=True)
 async def setvoicecheck(ctx: commands.Context, minutes: int):
     set_setting(ctx.guild.id, "voice_check_every_min", str(int(minutes)))
-    await ctx.send(f"ตั้งบอทเช็คเสียงทุก {minutes} นาที ✅ (แนะนำ 1)")
+    await ctx.send("ตอนนี้ loop เสียงล็อคไว้ที่ 1 นาทีเพื่อความนิ่ง ✅ (ยังไม่ได้ใช้ค่านี้จริง)")
 
 
 @bot.command()
@@ -569,19 +567,17 @@ async def setvoicemutelimit(ctx: commands.Context, minutes: int):
 
 
 # ======================
-# Voice tracking loop
+# Voice tracking loop (ไม่มีส่ง LOGS ห้องแอดมิน)
 # ======================
 def is_member_effectively_muted(member: discord.Member) -> bool:
     vs = member.voice
     if not vs:
         return True
-    # ถ้า self mute/deaf หรือ server mute/deaf ให้ถือว่า muted
     return bool(vs.self_mute or vs.self_deaf or vs.mute or vs.deaf)
 
 
 @tasks.loop(minutes=1)
 async def voice_tick():
-    # ทุกนาทีจะไล่ทุกกิลด์ที่บอทอยู่
     for guild in bot.guilds:
         allowed = set(list_voice_channels(guild.id))
         if not allowed:
@@ -597,14 +593,12 @@ async def voice_tick():
 
             vs = member.voice
             if not vs or not vs.channel:
-                # ถ้าออกห้องเสียง -> รีเซ็ต progress
                 row = get_or_create_voice_progress(guild.id, member.id)
                 if row["active_minutes"] != 0 or row["muted_streak_minutes"] != 0 or row["channel_id"] is not None:
                     update_voice_progress(guild.id, member.id, None, 0, 0)
                 continue
 
             if vs.channel.id not in allowed:
-                # อยู่ห้องอื่นที่ไม่อนุญาต -> รีเซ็ต
                 row = get_or_create_voice_progress(guild.id, member.id)
                 if row["active_minutes"] != 0 or row["muted_streak_minutes"] != 0 or row["channel_id"] != vs.channel.id:
                     update_voice_progress(guild.id, member.id, vs.channel.id, 0, 0)
@@ -616,23 +610,19 @@ async def voice_tick():
 
             if is_member_effectively_muted(member):
                 muted_streak += 1
-                # mute เกิน limit -> รีเซ็ต active ของ "รอบนั้น"
                 if muted_streak >= mute_limit:
                     active = 0
                 update_voice_progress(guild.id, member.id, vs.channel.id, active, muted_streak)
                 continue
 
-            # ไม่ mute -> นับเวลา
             muted_streak = 0
             active += 1
 
-            # ครบรอบ -> ให้แต้ม และลด active ลงตามรอบ (เผื่อสะสม)
             if active >= reward_minutes:
-                before_pts = get_points(guild.id, member.id)
                 before, after = add_points(guild.id, member.id, reward_points)
                 active = active - reward_minutes
 
-                # DM ผู้เล่น (ตามที่ฟุขอ)
+                # DM ผู้เล่น
                 try:
                     await member.send(
                         f"🎧 คุณอยู่ห้องเสียงครบ {reward_minutes} นาทีแล้ว!\n"
@@ -642,16 +632,12 @@ async def voice_tick():
                 except Exception:
                     pass
 
-
             update_voice_progress(guild.id, member.id, vs.channel.id, active, muted_streak)
 
 
 @voice_tick.before_loop
 async def before_voice_tick():
     await bot.wait_until_ready()
-    # ตั้ง interval ตาม setting ไม่ได้ตรง ๆ ใน tasks.loop, เลยใช้ 1 นาทีเป็นฐานก่อน
-    # ถ้าฟุอยากให้มันใช้ค่า setvoicecheck จริง 100% ต้องเขียนแบบ custom scheduler
-    # ตอนนี้ให้คงที่ 1 นาทีเพื่อความนิ่ง (ตรงกับที่ฟุตั้งไว้ส่วนใหญ่)
 
 
 # ======================
@@ -660,7 +646,6 @@ async def before_voice_tick():
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
-    # ทำให้ปุ่มกดได้แม้รีสตาร์ท (persistent view)
     bot.add_view(RollView())
     bot.add_view(DailyView())
 
@@ -679,7 +664,6 @@ def main():
     if not token:
         raise RuntimeError("❌ ไม่พบ DISCORD_TOKEN ใน .env หรือ Railway Variables")
 
-    # เปิด server กันหลับ (ถ้ามีไฟล์ myserver.py)
     if server_on:
         try:
             server_on()

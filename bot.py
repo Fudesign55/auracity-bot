@@ -303,7 +303,7 @@ class DailyView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="✅ รับ Daily",
+        label="✅ กดรับ Daily",
         style=discord.ButtonStyle.success,
         custom_id="aura:daily"
     )
@@ -349,7 +349,7 @@ class RollView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="🎲 สุ่มรางวัล (เสีย 10 แต้ม)",
+        label="🎲 สุ่มรางวัล",
         style=discord.ButtonStyle.primary,
         custom_id="aura:roll"
     )
@@ -438,8 +438,9 @@ def build_gacha_embed(guild_id: int) -> discord.Embed:
 def build_daily_embed(guild_id: int) -> discord.Embed:
     daily_amount = int(get_setting(guild_id, "daily_amount", DEFAULT_DAILY_AMOUNT))
     embed = discord.Embed(
-        title="✅ DAILY CLAIM",
-        description=f"กดรับ Daily ได้วันละครั้ง: **+{daily_amount}** แต้ม",
+        title="DAILY CLAIM",
+        description=f"
+        สามารถกดรับ Daily ได้ 1 ครั้งต่อวันเท่านั้น (**+{daily_amount}** แต้ม)",
     )
 
     img = get_setting(guild_id, "daily_image_url", None)

@@ -192,6 +192,35 @@ async def send_log(guild: discord.Guild, text: str):
     ch = guild.get_channel(int(log_ch_id))
     if ch:
         await ch.send(text)
+# ================= POINT SYSTEM =================
+def get_points(con, guild_id: int, user_id: int) -> int:
+    cur = con.cursor()
+    cur.execute(
+        "SELECT points FROM users WHERE guild_id=? AND user_id=?",
+        (guild_id, user_id)
+    )
+    row = cur.fetchone()
+    return int(row[0]) if row else 0
+
+def set_points(con, guild_id: int, user_id: int, points: int):
+    con.execute(
+        "INSERT INTO users (guild_id, user_id, points) VALUES (?, ?, ?) "
+        "ON CONFLICT(guild_id, user_id) DO UPDATE SET points=excluded.points",
+        (guild_id, user_id, int(points))
+    )
+
+def add_points(con, guild_id: int, user_id: int, amount: int) -> tuple[int, int]:
+    before = get_points(con, guild_id, user_id)
+    after = before + int(amount)
+    set_points(con, guild_id, user_id, after)
+    return before, after
+async def send_log(guild: discord.Guild, message: str):
+    log_ch_id = get_setting(guild.id, "log_channel_id")
+    if not log_ch_id:
+        return
+    ch = guild.get_channel(int(log_ch_id))
+    if ch:
+        await ch.send(message)
 
 
 # =========================
@@ -270,53 +299,53 @@ class GachaView(discord.ui.View):
         if not interaction.guild_id:
             return await interaction.response.send_message("ใช้ในเซิร์ฟเวอร์เท่านั้นนะ", ephemeral=True)
 
-        guild_id = interaction.guild_id
-        user_id = interaction.user.id
+        guild_id = interaction.guild.id
+user_id = interaction.user.id
 
-        with sqlite3.connect(DB_PATH) as con:
-            points, _ = get_user(con, guild_id, user_id)
-            before = points
+roll_ch = get_setting(guild_id, "roll_channel_id")
+if roll_ch and str(interaction.channel.id) != str(roll_ch):
+    return await interaction.response.send_message("กดไม่ได้ที่ห้องนี้ 💜", ephemeral=True)
 
-            if points < ROLL_COST:
-                await interaction.response.send_message(
-                    f"แต้มไม่พอจ้า 😭\nตอนนี้มี: **{points}** แต้ม",
-                    ephemeral=True
-                )
-                return
+with sqlite3.connect(DB_PATH) as con:
+    before = get_points(con, guild_id, user_id)
 
-            points -= ROLL_COST
-            set_user_points(con, guild_id, user_id, points)
-            after = points
-
-        reward = roll_reward()
-
-        # ผู้เล่นเห็นแบบ ephemeral
-        await interaction.response.send_message(
-            f"🎲 ผลกาชา: **{reward}**\nแต้ม: **{before} → {after}**",
+    if before < ROLL_COST:
+        return await interaction.response.send_message(
+            f"แต้มไม่พอ! มี {before} ต้องใช้ {ROLL_COST} ❌",
             ephemeral=True
         )
 
-        # Log แอดมิน
-        await send_log(
-            interaction.guild,
-            f"🎲 GACHA | {interaction.user.mention} | ก่อน: {before} | หลัง: {after} | ได้: {reward}"
-        )
+    after_cost = before - ROLL_COST
+    set_points(con, guild_id, user_id, after_cost)
+
+    prize = roll_reward()
+
+    con.commit()
+
+await interaction.response.send_message(
+    f"🎁 ได้: **{prize}**\nแต้มเหลือ: **{after_cost}**",
+    ephemeral=True
+)
+
+await send_log(
+    interaction.guild,
+    f"🎲 <@{user_id}> กดกาชา | ก่อน: {before} | หลัง: {after_cost} | ได้: {prize}"
+)
 
     @discord.ui.button(label="📊 เช็คคะแนน", style=discord.ButtonStyle.secondary, custom_id="aura:checkpoints")
-    async def checkpoints_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.guild_id:
-            return await interaction.response.send_message("ใช้ในเซิร์ฟเวอร์เท่านั้นนะ", ephemeral=True)
+async def checkpoints_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+    guild_id = interaction.guild.id
+user_id = interaction.user.id
 
-        guild_id = interaction.guild_id
-        user_id = interaction.user.id
+with sqlite3.connect(DB_PATH) as con:
+    points = get_points(con, guild_id, user_id)
 
-        with sqlite3.connect(DB_PATH) as con:
-            points, _ = get_user(con, guild_id, user_id)
+await interaction.response.send_message(
+    f"คะแนนของคุณตอนนี้: **{points} แต้ม** ✅",
+    ephemeral=True
+)
 
-        await interaction.response.send_message(
-            f"คะแนนของคุณตอนนี้: **{points}** แต้ม ✅",
-            ephemeral=True
-        )
+
 
 
 # =========================
@@ -555,3 +584,4 @@ async def on_ready():
 # RUN
 # =========================
 bot.run(TOKEN)
+

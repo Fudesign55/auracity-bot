@@ -248,7 +248,7 @@ def roll_reward():
 # =========================
 # UI - DAILY
 # =========================
-class DailyView(discord.ui.View):
+ DailyView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -290,60 +290,65 @@ class DailyView(discord.ui.View):
 # =========================
 # UI - GACHA
 # =========================
-class GachaView(discord.ui.View):
+class RollView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label=f"🎲 สุ่มรางวัล (เสีย {ROLL_COST} แต้ม)", style=discord.ButtonStyle.primary, custom_id="aura:gacha")
-    async def gacha_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.guild_id:
-            return await interaction.response.send_message("ใช้ในเซิร์ฟเวอร์เท่านั้นนะ", ephemeral=True)
-
+    @discord.ui.button(
+        label="🎲 สุ่มรางวัล",
+        style=discord.ButtonStyle.primary,
+        custom_id="aura:roll"
+    )
+    async def roll_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild_id = interaction.guild.id
-user_id = interaction.user.id
+        user_id = interaction.user.id
 
-roll_ch = get_setting(guild_id, "roll_channel_id")
-if roll_ch and str(interaction.channel.id) != str(roll_ch):
-    return await interaction.response.send_message("กดไม่ได้ที่ห้องนี้ 💜", ephemeral=True)
+        roll_ch = get_setting(guild_id, "roll_channel_id")
+        if roll_ch and str(interaction.channel.id) != str(roll_ch):
+            return await interaction.response.send_message("❌ กดไม่ได้ที่ห้องนี้", ephemeral=True)
 
-with sqlite3.connect(DB_PATH) as con:
-    before = get_points(con, guild_id, user_id)
+        with sqlite3.connect(DB_PATH) as con:
+            before = get_points(con, guild_id, user_id)
 
-    if before < ROLL_COST:
-        return await interaction.response.send_message(
-            f"แต้มไม่พอ! มี {before} ต้องใช้ {ROLL_COST} ❌",
+            if before < ROLL_COST:
+                return await interaction.response.send_message(
+                    f"แต้มไม่พอ! มี {before} ต้องใช้ {ROLL_COST}",
+                    ephemeral=True
+                )
+
+            after = before - ROLL_COST
+            set_points(con, guild_id, user_id, after)
+
+            prize = roll_reward()
+            con.commit()
+
+        await interaction.response.send_message(
+            f"🎁 ได้: {prize}\nแต้มเหลือ: {after}",
             ephemeral=True
         )
 
-    after_cost = before - ROLL_COST
-    set_points(con, guild_id, user_id, after_cost)
+        await send_log(
+            interaction.guild,
+            f"🎲 <@{user_id}> กดกาชา | ก่อน: {before} | หลัง: {after} | ได้: {prize}"
+        )
 
-    prize = roll_reward()
+    @discord.ui.button(
+        label="📊 เช็คคะแนน",
+        style=discord.ButtonStyle.secondary,
+        custom_id="aura:checkpoints"
+    )
+    async def checkpoints_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild_id = interaction.guild.id
+        user_id = interaction.user.id
 
-    con.commit()
+        with sqlite3.connect(DB_PATH) as con:
+            points = get_points(con, guild_id, user_id)
 
-await interaction.response.send_message(
-    f"🎁 ได้: **{prize}**\nแต้มเหลือ: **{after_cost}**",
-    ephemeral=True
-)
+        await interaction.response.send_message(
+            f"📊 คะแนนของคุณ: **{points} แต้ม**",
+            ephemeral=True
+        )
 
-await send_log(
-    interaction.guild,
-    f"🎲 <@{user_id}> กดกาชา | ก่อน: {before} | หลัง: {after_cost} | ได้: {prize}"
-)
-
-    @discord.ui.button(label="📊 เช็คคะแนน", style=discord.ButtonStyle.secondary, custom_id="aura:checkpoints")
-async def checkpoints_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-    guild_id = interaction.guild.id
-user_id = interaction.user.id
-
-with sqlite3.connect(DB_PATH) as con:
-    points = get_points(con, guild_id, user_id)
-
-await interaction.response.send_message(
-    f"คะแนนของคุณตอนนี้: **{points} แต้ม** ✅",
-    ephemeral=True
-)
 
 
 
@@ -584,4 +589,5 @@ async def on_ready():
 # RUN
 # =========================
 bot.run(TOKEN)
+
 

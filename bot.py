@@ -343,9 +343,14 @@ class DailyView(discord.ui.View, PointsButtonMixin):
 
         # LOG (ห้องแอดมิน)
         await send_log(
-            interaction.guild,
-            f"🟩 DAILY | <@{uid}> | {before} → {after} (+{daily_amount})"
-        )
+    interaction.guild,
+    f"""🟩 **DAILY CLAIM**
+👤 ผู้เล่น: <@{uid}>
+➕ ได้รับ: +{daily_amount} แต้ม
+📊 คะแนน: {before} → {after}
+"""
+)
+
 
 
 class RollView(discord.ui.View, PointsButtonMixin):
@@ -394,9 +399,14 @@ class RollView(discord.ui.View, PointsButtonMixin):
 
         # LOG (ห้องแอดมิน) — ขอเป็น clickable id ตามที่ฟุต้องการ
         await send_log(
-            interaction.guild,
-            f"🎲 GACHA | <@{uid}> | {pts_before} → {pts_after} (-{roll_cost}) | ได้: {reward}"
-        )
+    interaction.guild,
+    f"""🎲 **AURA GACHA**
+👤 ผู้เล่น: <@{uid}>
+🎁 รางวัล: **{reward}**
+💸 ใช้แต้ม: -{roll_cost}
+📊 คะแนน: {pts_before} → {pts_after}
+"""
+)
 
 
 # ======================
@@ -632,10 +642,6 @@ async def voice_tick():
                 except Exception:
                     pass
 
-                await send_log(
-                    guild,
-                    f"🎧 VOICE | <@{member.id}> | {before_pts} → {after} (+{reward_points}) | ห้อง: {vs.channel.mention}"
-                )
 
             update_voice_progress(guild.id, member.id, vs.channel.id, active, muted_streak)
 

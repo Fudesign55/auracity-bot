@@ -350,7 +350,7 @@ class RollView(discord.ui.View):
 
     @discord.ui.button(
         label="🎲 สุ่มรางวัล",
-        style=discord.ButtonStyle.primary,
+        style=discord.ButtonStyle.danger,
         custom_id="aura:roll"
     )
     async def roll_btn(self, interaction: discord.Interaction, button: discord.ui.Button):

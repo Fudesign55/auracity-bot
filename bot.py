@@ -376,6 +376,23 @@ class RollView(discord.ui.View):
                 f"แต้มไม่พอจ้า 😅 ต้องใช้ {roll_cost} แต้ม/ครั้ง\nตอนนี้คุณมี: **{pts_before}** แต้ม",
                 ephemeral=True
             )
+    @discord.ui.button(
+        label="📊 เช็คคะแนน",
+        style=discord.ButtonStyle.secondary,
+        custom_id="aura:checkpoints"
+    )
+    async def checkpoints_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild:
+            return await interaction.response.send_message("ใช้ในเซิร์ฟเวอร์เท่านั้นนะ", ephemeral=True)
+
+        gid = interaction.guild.id
+        uid = interaction.user.id
+        pts = get_points(gid, uid)
+
+        await interaction.response.send_message(
+            f"คะแนนของคุณตอนนี้: **{pts}** แต้ม ✅",
+            ephemeral=True
+        )
 
         # หักแต้ม + สุ่ม
         set_points(gid, uid, pts_before - roll_cost)

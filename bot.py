@@ -376,6 +376,29 @@ class RollView(discord.ui.View):
                 f"แต้มไม่พอจ้า 😅 ต้องใช้ {roll_cost} แต้ม/ครั้ง\nตอนนี้คุณมี: **{pts_before}** แต้ม",
                 ephemeral=True
             )
+
+        # ✅ หักแต้ม + สุ่ม (อยู่ในปุ่มสุ่มเท่านั้น)
+        set_points(gid, uid, pts_before - roll_cost)
+        reward = roll_reward_name()
+        pts_after = get_points(gid, uid)
+
+        await interaction.response.send_message(
+            f"🎉 คุณได้รางวัล: **{reward}**\nแต้มคงเหลือ: **{pts_after}**",
+            ephemeral=True
+        )
+
+        # LOG (Gacha แยกห้อง)
+        await send_gacha_log(
+            interaction.guild,
+            "\n".join([
+                "🎲 **AURA GACHA**",
+                f"👤 ผู้เล่น: <@{uid}>",
+                f"🎁 รางวัล: **{reward}**",
+                f"💸 ใช้แต้ม: -{roll_cost}",
+                f"📊 คะแนน: {pts_before} → {pts_after}",
+            ])
+        )
+
     @discord.ui.button(
         label="📊 เช็คคะแนน",
         style=discord.ButtonStyle.secondary,
@@ -393,6 +416,7 @@ class RollView(discord.ui.View):
             f"คะแนนของคุณตอนนี้: **{pts}** แต้ม ✅",
             ephemeral=True
         )
+
 
         # หักแต้ม + สุ่ม
         set_points(gid, uid, pts_before - roll_cost)

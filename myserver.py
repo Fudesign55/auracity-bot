@@ -1,15 +1,18 @@
 from flask import Flask
 from threading import Thread
+import os
 
-app = Flask('')
+app = Flask(__name__)
 
-@app.route('/')
+@app.route("/")
 def home():
-    return "Server is running!"
+    return "AURACITY BOT is running!"
 
-def run():
-    app.run(host="0.0.0.0", port=8080)
+def _run():
+    port = int(os.getenv("PORT", "8080"))
+    app.run(host="0.0.0.0", port=port)
 
 def server_on():
-    t = Thread(target=run)
+    t = Thread(target=_run)
+    t.daemon = True
     t.start()

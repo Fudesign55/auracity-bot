@@ -439,8 +439,7 @@ def build_daily_embed(guild_id: int) -> discord.Embed:
     daily_amount = int(get_setting(guild_id, "daily_amount", DEFAULT_DAILY_AMOUNT))
     embed = discord.Embed(
         title="DAILY CLAIM",
-        description=f"
-        สามารถกดรับ Daily ได้ 1 ครั้งต่อวันเท่านั้น (**+{daily_amount}** แต้ม)",
+        description=f"สามารถกดรับ Daily ได้ 1 ครั้งต่อวันเท่านั้น (**+{daily_amount}** แต้ม)",
     )
 
     img = get_setting(guild_id, "daily_image_url", None)

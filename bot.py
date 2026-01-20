@@ -303,7 +303,7 @@ class DailyView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="✅ กดรับ Daily",
+        label="✅ **กดรับ Daily**",
         style=discord.ButtonStyle.success,
         custom_id="aura:daily"
     )
@@ -349,7 +349,7 @@ class RollView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="🎲 สุ่มรางวัล",
+        label="🎲 **สุ่มรางวัล**",
         style=discord.ButtonStyle.danger,
         custom_id="aura:roll"
     )

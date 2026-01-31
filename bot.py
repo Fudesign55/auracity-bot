@@ -205,6 +205,28 @@ class RollView(discord.ui.View):
 # Commands
 # ======================
 @bot.command()
+@commands.has_permissions(administrator=True)
+async def listvoicechannels(ctx: commands.Context):
+    """คำสั่งเช็ครายชื่อห้องเสียงที่ตั้งค่าไว้"""
+    ids = list_voice_channels(ctx.guild.id)
+    if not ids:
+        return await ctx.send("ยังไม่ได้ตั้งห้องเสียงเลยน้า (ใช้ !addvoicechannel #ชื่อห้อง)")
+    
+    names = []
+    for cid in ids:
+        ch = ctx.guild.get_channel(cid)
+        names.append(ch.mention if ch else f"ห้องรหัส: `{cid}` (หาห้องไม่เจอ)")
+    
+    await ctx.send("🔊 **ห้องเสียงที่นับเวลาได้ในตอนนี้:**\n" + "\n".join(names))
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def removevoicechannel(ctx: commands.Context, channel: discord.VoiceChannel):
+    """คำสั่งลบห้องเสียงที่ไม่ต้องการให้นับแต้ม"""
+    remove_voice_channel(ctx.guild.id, channel.id)
+    await ctx.send(f"ลบห้องเสียง {channel.mention} ออกจากการนับแต้มแล้ว ✅")
+
+@bot.command()
 async def points(ctx: commands.Context):
     pts = get_points(ctx.guild.id, ctx.author.id)
     await ctx.send(f"<@{ctx.author.id}> ตอนนี้มี **{pts}** แต้ม ✅")

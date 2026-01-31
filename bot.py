@@ -206,6 +206,27 @@ class RollView(discord.ui.View):
 # ======================
 @bot.command()
 @commands.has_permissions(administrator=True)
+async def setvoicerewardminutes(ctx: commands.Context, minutes: int):
+    """ตั้งค่า: ออนห้องเสียงครบกี่นาทีถึงจะได้แต้ม"""
+    set_setting(ctx.guild.id, "voice_reward_minutes", str(int(minutes)))
+    await ctx.send(f"ตั้งค่า Voice Reward = ครบ **{minutes}** นาที จะได้รับแต้ม ✅")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setvoicerewardpoints(ctx: commands.Context, points: int):
+    """ตั้งค่า: ออนครบเวลาแล้วจะได้กี่แต้ม"""
+    set_setting(ctx.guild.id, "voice_reward_points", str(int(points)))
+    await ctx.send(f"ตั้งค่า Voice Reward = ได้รับ **{points}** แต้มต่อรอบ ✅")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setvoicemutelimit(ctx: commands.Context, minutes: int):
+    """ตั้งค่า: ปิดไมค์เกินกี่นาทีจะรีเซ็ตเวลาสะสม"""
+    set_setting(ctx.guild.id, "voice_mute_limit_min", str(int(minutes)))
+    await ctx.send(f"ตั้งค่า Mute Limit = เกิน **{minutes}** นาที จะรีเซ็ตเวลาสะสม ✅")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
 async def listvoicechannels(ctx: commands.Context):
     """คำสั่งเช็ครายชื่อห้องเสียงที่ตั้งค่าไว้"""
     ids = list_voice_channels(ctx.guild.id)
